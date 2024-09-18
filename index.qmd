@@ -66,6 +66,7 @@ number-sections: true
 #| include: false
 #| warning: false 
 install.packages('gtsummary')
+install.packages('broom')
 library(gtsummary)
 ```
 

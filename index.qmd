@@ -68,6 +68,7 @@ number-sections: true
 install.packages('gtsummary')
 install.packages('broom')
 install.packages('broom.helpers')
+install.packages('cardx')
 library(gtsummary)
 ```
 

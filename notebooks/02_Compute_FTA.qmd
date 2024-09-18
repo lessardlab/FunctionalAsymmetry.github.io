@@ -1,0 +1,627 @@
+---
+title: "Calculating Functional Trophic Asymmetry"
+format: 
+  html:
+    theme: "flatly" # A clean, flat theme suitable for scientific documents
+    toc: true # Enables table of contents
+    toc-depth: 3 # Adjusts depth of table of contents; change as needed
+    number-sections: true # Enables section numbering
+    fig-width: 6 # Sets default figure width to 6 inches
+    fig-height: 4 # Sets default figure height to 4 inches
+    fig-align: "center" # Centers figures
+editor: visual
+execute:
+  eval: false
+  echo: true
+---
+
+
+# Compute observed values of FTA and H2
+
+```{r}
+# A function to calculate metrics for a grid
+calc_net_metric <- function(grid_test, SBMs){
+  
+  
+  #grid_test <- all_assemblages_prunned %>% split(.$grid) %>% pluck(1)
+  
+  a <- grid_test %>% 
+    distinct(id, taxa, SBM_G) %>% 
+    split(.$taxa)
+  
+  
+  fr_palm <- table(a[[1]]$SBM_G)
+  
+  fr_mammals <- table(a[[2]]$SBM_G)
+  
+  ## compute normalized asymmetry 
+  
+  fr_norm_palm <- fr_palm/sum(fr_palm)
+  
+  fr_norm_mammals <- fr_mammals/sum(fr_mammals)
+  
+  fta <- abs(fr_norm_palm - fr_norm_mammals)
+  
+  ## compute specialization
+  n <- expand.grid(pluck(a,'mammals', 'id'), pluck(a,'palm', 'id')) 
+  
+  
+  areas <- grid_test %>% 
+    split(.$taxa) %>% 
+    map(~{
+      .x %>% 
+        mutate(area = as.numeric(area)) %>% 
+        group_by(id) %>% 
+        summarize(area_sum = sum(area))
+      
+    }) %>% 
+    bind_rows() 
+  
+  n <- n %>% 
+    left_join(pluck(a,'mammals'), by = c('Var1' = 'id')) %>% 
+    left_join(pluck(a,'palm'), by = c('Var2' = 'id')) %>% 
+    left_join(areas, by = c('Var1' = 'id') ) %>% 
+    left_join(areas, by = c('Var2' = 'id') )
+  
+  n$intPro <- sapply(1:length(n$Var1), function(i) 
+    (SBMs$SBM1$Omega_rs[n$SBM_G.x[i], n$SBM_G.y[i]]))
+  
+  n <- n %>% 
+    mutate(int_area = ((area_sum.x ) / sum(area_sum.x,area_sum.y)) * ((area_sum.y ) / sum(area_sum.x,area_sum.y)))
+  
+  n$n_geog_dist <- st_distance(x = n$geometry.x,y = n$geometry.y) %>% 
+    diag()
+  
+  n$int_final <- scales::rescale(n$int_area,c(0,1)) * (scales::rescale(n$int_area,c(0,1)) * scales::rescale(as.numeric(n$n_geog_dist),c(0,1)))
+  
+  netT <- xtabs(int_final~Var1 + Var2, n)
+  
+  h2 <-  cassandRa::RarefyNetwork(netT,
+                                  abs_sample_levels = 100,
+                                  metrics = c("H2"))
+  
+  
+  h2 <- h2$H2 |> median()
+  
+  
+  return(list(fr_palm = fr_palm, 
+              fr_mammals = fr_mammals, 
+              fr_norm_palm = fr_norm_palm, 
+              fr_norm_mammals = fr_norm_mammals, 
+              fta = fta, 
+              netT = netT, 
+              h2 = h2))
+}    
+
+
+```
+
+```{r}
+cal_net_metric_safe <- safely(calc_net_metric)
+
+# # unit test 
+system.time({
+  
+  test_res <-  cal_net_metric_safe(all_assemblages_prunned %>% split(.$grid) %>% pluck(1), SBMs)
+})
+
+test_res$result
+
+```
+
+```{r}
+all_assemblages_prunned2 <- all_assemblages_prunned
+
+all_assemblages_prunned2$geometry <- NULL
+
+all_assemblages_prunned2 |> 
+  group_by(SBM_G)
+
+```
+
+```{r}
+
+all_assemblages_prunned$grid %>% unique() %>% length()
+
+library(furrr)
+plan(multisession, workers = 10)
+
+
+my_net__output <- 
+  all_assemblages_prunned %>% split(.$grid) %>% 
+  furrr::future_map(function(grid) {
+    cal_net_metric_safe(grid, SBMs)
+  }) 
+
+
+
+```
+
+```{r}
+saveRDS(my_net__output, '00_Data/02_species_interactions/final-networks-grid.RDS')
+```
+
+```{r}
+my_networks <- readRDS('00_Data/02_species_interactions/final-networks-grid.RDS')
+
+## Extract results 
+
+fta_obs <- 
+  my_networks |> 
+  map(~.x$result) |>
+  map(~.x$fta |> unlist()) |>
+  bind_rows() |>
+  mutate('grid' = names(my_networks))
+
+fr_palms <- 
+  my_networks |> 
+  map(~.x$result) |>
+  map(~.x$fr_palm |> unlist()) |>
+  bind_rows() |>
+  mutate('grid' = names(my_networks))
+
+
+fr_mammals <- 
+  my_networks |> 
+  map(~.x$result) |>
+  map(~.x$fr_mammals |> unlist()) |>
+  bind_rows() |>
+  mutate('grid' = names(my_networks))
+
+fr_norm_palms <- 
+  my_networks |> 
+  map(~.x$result) |>
+  map(~.x$fr_norm_palm |> unlist()) |>
+  bind_rows() |>
+  mutate('grid' = names(my_networks))
+
+
+
+
+
+fr_norm_mammals <- 
+  my_networks |> 
+  map(~.x$result) |>
+  map(~.x$fr_norm_mammals |> unlist()) |>
+  bind_rows() |>
+  mutate('grid' = names(my_networks))
+
+h2_grid <- 
+  my_networks |> 
+  map(~.x$result) |>
+  map(~.x$h2 |> unlist()) |>
+  unlist() |>
+  data.frame() |> 
+  setNames('h2') |>
+  rownames_to_column('grid')
+
+
+
+
+
+
+```
+
+# Computing FTA z-score resampling within each biogeographic region
+
+```{r}
+# A function to calculate metrics for a grid (for zcores)
+calc_net_metric2 <- function(grid_test, SBMs){
+  
+  
+  #grid_test <- expected_comm
+  
+  a <- grid_test %>% 
+    distinct(id, taxa, SBM_G) %>% 
+    split(.$taxa)
+  
+  
+  fr_palm <- table(a[[1]]$SBM_G)
+  
+  fr_mammals <- table(a[[2]]$SBM_G)
+  
+  ## compute normalized asymmetry 
+  
+  fr_norm_palm <- fr_palm/sum(fr_palm)
+  
+  fr_norm_mammals <- fr_mammals/sum(fr_mammals)
+  
+  fta <- abs(fr_norm_palm - fr_norm_mammals)
+  
+  ## compute specialization
+  n <- expand.grid(pluck(a,'mammals', 'id'), pluck(a,'palm', 'id')) 
+  
+  
+  
+  n <- n %>% 
+    left_join(pluck(a,'mammals'), by = c('Var1' = 'id')) %>% 
+    left_join(pluck(a,'palm'), by = c('Var2' = 'id')) 
+  
+  n$intPro <- sapply(1:length(n$Var1), function(i) 
+    (SBMs$SBM1$Omega_rs[n$SBM_G.x[i], n$SBM_G.y[i]]))
+  
+  netT <- xtabs(intPro~Var1 + Var2, n)
+  
+  h2 <-  cassandRa::RarefyNetwork(netT,
+                                  abs_sample_levels = 100,
+                                  metrics = c("H2"))
+  
+  
+  h2 <- h2$H2 |> median()
+  
+  
+  return(list(fr_palm = fr_palm, 
+              fr_mammals = fr_mammals, 
+              fr_norm_palm = fr_norm_palm, 
+              fr_norm_mammals = fr_norm_mammals, 
+              fta = fta, 
+              netT = netT, 
+              h2 = h2))
+}    
+```
+
+```{r}
+all_assemblages_prunned |> head()
+
+## add biogeographic region based on xy 
+
+xy_sf <- st_as_sf(all_assemblages_prunned, coords = c("cord_x", "cord_y"), crs = st_crs(neotropics))
+
+## make sure crs match 
+
+xy_sf <- st_set_crs(xy_sf, st_crs(neotropics))
+
+
+all_assemblages_prunned_biog <- st_join(xy_sf, neotropics)
+
+all_assemblages_prunned_biog <- 
+  all_assemblages_prunned_biog |> 
+  group_by(id, taxa, grid, Dominions) |> 
+  slice(1)
+
+head(all_assemblages_prunned_biog)
+
+```
+
+```{r}
+all_assemblages_prunned_biog2 <-all_assemblages_prunned_biog
+
+all_assemblages_prunned_biog2$geometry <- NULL
+
+sp_per_sbm <- all_assemblages_prunned_biog2 |>
+  group_by(Dominions, SBM_G, taxa) |>
+  summarise(n = n_distinct(id)) |>
+  filter(!is.na(taxa), !is.na(SBM_G), !is.na(Dominions)) |>
+  ggplot() + 
+  # make a stacked barplot
+  geom_bar(aes(x = SBM_G, y = n, fill = taxa), stat = "identity") +
+  theme_minimal() + 
+  facet_wrap(~Dominions, scales = 'free_y') +
+  # color darkgreen palm and firebrick mammal 
+  scale_fill_manual(values = c('firebrick2', 'darkgreen')) 
+
+
+all_assemblages_prunned_biog2 |>
+  filter(SBM_G == 5) |>
+  pull(id) |>
+  unique()
+
+```
+
+```{r}
+
+grids_to_sample <- all_assemblages_prunned$grid |> unique() 
+
+
+
+
+# Define function to compute expected values 
+
+get_expected_val <- function(all_assemblages_prunned_biog, grid_to_sample, SBMs){
+  
+  biog_to_sample <- (all_assemblages_prunned_biog$Dominions[all_assemblages_prunned_biog$grid == grid_to_sample ] |> 
+                       table() |> sort(decreasing = T))[1] |> names()
+  
+  expected_comm <- 
+    all_assemblages_prunned_biog |>
+    filter(Dominions %in% biog_to_sample) %>% 
+    split(.$taxa) |>
+    map(~ .x %>% 
+          group_by(id) |> 
+          slice(1) |> 
+          ungroup() |>
+          slice_sample(n = 10)) |>
+    bind_rows()
+  
+  
+  
+  return(calc_net_metric2(expected_comm, SBMs))
+  
+  
+}
+
+
+
+## Make safe version of the function
+
+safe_expected_values <- function(n_rep, all_assemblages_prunned_biog, grids_to_sample, SBMs){
+  
+  replicate(n_rep,get_expected_val(all_assemblages_prunned_biog, grids_to_sample, SBMs))
+  
+}
+
+safe_expected_values <- safely(safe_expected_values)
+
+```
+
+```{r}
+cl <- NULL
+## open a parallel cluster to run safe_expected_values in parallel 
+
+library(parallel)
+library(foreach)
+library(doParallel)
+
+# Register parallel backend
+cl <- makeCluster(10)
+registerDoParallel(cl)
+
+## Export variables and libraries to each cluster
+clusterExport(cl, c('all_assemblages_prunned_biog', 'grids_to_sample', 'SBMs', 'calc_net_metric2', 'get_expected_val','safe_expected_values'))
+
+clusterEvalQ(cl, {
+  library(tidyverse)
+  library(sf)
+  library(cassandRa)
+  library(vegan)
+})
+
+# parallel::stopCluster(cl)
+
+# parallel::stopCluster(cl)
+```
+
+```{r}
+# Sample 100 grids and apply the function in parallel using foreach
+
+gsample <- (grids_to_sample)
+
+
+
+my_null_result_full <- foreach(grid = gsample, .packages = c('tidyverse', 'sf', 'cassandRa', 'vegan')) %dopar% {
+  safe_expected_values(50, all_assemblages_prunned_biog, grid, SBMs)
+  
+}
+
+
+saveRDS(my_null_result_full, '00_Data/02_species_interactions/null-networks-grid_final_all2.RDS')
+
+
+```
+
+## Recuperate results
+
+```{r}
+my_null_result_full <- readRDS('00_Data/02_species_interactions/null-networks-grid_final_all2.RDS')
+names(my_null_result_full) <- gsample
+mres <- keep(my_null_result_full, ~ !is.null(.x$result)) 
+mres <- mres |> map(~.x$result)
+
+head(mres)
+mres_zscore <- mres 
+
+
+```
+
+# Compute z-scores for FTA and H2
+
+```{r}
+
+fta_expected_mean <- 
+  mres_zscore |> 
+  map(~.x['fta',] |> bind_rows() |> colMeans()) |>
+  bind_rows() |>
+  mutate(grid = names(mres_zscore))
+
+
+
+fta_expected_sd <- 
+  mres_zscore |> 
+  map(~.x['fta',] |> bind_rows() |> apply(2,sd)) |>
+  bind_rows() |>
+  mutate(grid = names(mres_zscore))
+
+
+fr_palm_mean <- 
+  mres_zscore |> 
+  map(~.x['fr_palm',] |> bind_rows() |> colMeans()) |>
+  bind_rows() |>
+  mutate(grid = names(mres_zscore))
+
+fr_mammals_mean <- 
+  mres_zscore |> 
+  map(~.x['fr_mammals',] |> bind_rows() |> colMeans()) |>
+  bind_rows() |>
+  mutate(grid = names(mres_zscore))
+
+
+fr_norm_palm_mean <- 
+  mres_zscore |> 
+  map(~.x['fr_norm_palm',] |> bind_rows() |> colMeans()) |>
+  bind_rows() |>
+  mutate(grid = names(mres_zscore))
+
+fr_norm_mammals_mean <- 
+  mres_zscore |> 
+  map(~.x['fr_norm_mammals',] |> bind_rows() |> colMeans()) |>
+  bind_rows() |>
+  mutate(grid = names(mres_zscore))
+
+
+
+h2_mean <- 
+  mres_zscore |> 
+  map(~.x['h2',]|> unlist() |> mean(na.rm = T) ) |>
+  unlist() |>
+  data.frame() |> 
+  setNames('h2_x')|>
+  mutate(grid = names(mres_zscore))
+
+
+h2_sd <- 
+  mres_zscore |> 
+  map(~.x['h2',]|> unlist() |> sd(na.rm = T) ) |>
+  unlist() |>
+  data.frame() |> 
+  setNames('h2sd')|>
+  mutate(grid = names(mres_zscore))
+
+h2_obs <- 
+  mres_zscore |> 
+  imap(~.x['h2',] |> unlist() |> data.frame() |> setNames('h2_obs') |>
+         mutate(grid = .y) |>
+         mutate(rep = 1:50))|>
+  bind_rows()
+
+
+```
+
+```{r}
+
+# Define the original vector
+original_vector <- 1:length(mres_zscore) 
+
+# Define the size of each smaller vector
+size <- 100
+
+# Split the original vector
+split_vectors <- split(original_vector, gl(ceiling(length(original_vector) / size), size, length(original_vector)))
+
+
+
+full_fta_expected <-
+  
+  split_vectors |>
+  map(function(split_vec){
+    split_vec |> 
+      map(~{
+        1:50 |>
+          map(~{
+            expand.grid(
+              mres_zscore[[1]]['fr_norm_palm',.x] |> bind_rows() |> as.matrix(),
+              mres_zscore[[1]]['fr_norm_mammals',.x] |> bind_rows() |> as.matrix()
+            ) 
+            
+          }) |>
+          bind_rows() |>
+          mutate(lab = bind_rows(
+            replicate(50,
+                      expand.grid(matrix(rep(1:7),ncol = 7, byrow = T),
+                                  matrix(rep(1:7),ncol = 7, byrow = T)),
+                      simplify = FALSE)) |> 
+              mutate(label = paste0('p', Var1, 'm', Var2)) |> 
+              dplyr::pull(label)  ) |>
+          mutate(fta = abs(Var1 - Var2)) |>
+          mutate(grid = grids_to_sample[.x]) |>
+          group_by(lab) |>
+          mutate(h2_obs = mres_zscore[[.x]]['h2',] |>unlist()) |>
+          ungroup()
+      })  |>
+      bind_rows()
+  }) |>
+  bind_rows()
+
+head(full_fta_expected)
+
+
+
+```
+
+```{r}
+
+## add replicate labels
+full_fta_expected_summ <-
+  full_fta_expected |>
+  group_by(lab, grid) |>
+  summarise(fta_mean = mean(fta), 
+            fta_sd = sd(fta))
+
+
+full_fta_expected_summ$grid <- as.character(full_fta_expected_summ$grid)
+
+full_fta_val <- 
+  full_fta_expected_summ |>
+  left_join(full_fta, by = c('lab', 'grid')) 
+
+head(full_fta_val)
+
+full_fta_val$zscore <- (full_fta_val$fta - full_fta_val$fta_mean) / full_fta_val$fta_sd
+
+summary(full_fta_val$zscore)
+
+full_fta_val <- 
+  full_fta_val |>
+  left_join(h2_zscore, 'grid')
+
+full_fta_val |>
+  summarize(mn = mean(fta, na.rm = T), 
+            sd(fta, na.rm = T),
+            mnz = median(zscore, na.rm = T)) |>
+  arrange(desc(mnz))
+```
+
+```{r}
+int_per_smb <- SBMs$SBM1$Omega_rs %>% 
+  reshape2::melt() %>% 
+  ggplot() + 
+  geom_tile(aes(Var1, Var2, fill = value),  col = 'black', size = 1) + 
+  theme_minimal() + 
+  xlab('SBM group (mammals)') + 
+  ylab('SBM group (palms)')  + 
+  scale_fill_gradient(low = 'white',
+                      high = 'firebrick') + 
+  theme(legend.position ="none") + 
+  geom_text(aes(Var1, Var2, label = round(value,2))) +
+  # remove x axis labels
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  # remove y axis labels
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) 
+
+
+average_asymmetry_heatmap <- 
+  
+  full_fta_val |>
+  group_by(lab) |>
+  summarize(zscore = median(zscore, na.rm = T))  %>%
+  xtabs(zscore~lab, .) %>%
+  matrix(., nrow = 7, byrow = T) %>%
+  as.data.frame() %>%
+  # if inf change to 0
+  mutate(across(everything(), ~case_when(is.infinite(.)~ 0, TRUE ~ .))) %>% 
+  as.matrix() %>% 
+  reshape2::melt() %>% 
+  ggplot() + 
+  geom_tile(aes(Var1, Var2, fill = value),  col = 'black', size = 1) + 
+  theme_minimal() + 
+  xlab('SBM group (mammals)') + 
+  ylab('SBM group (palms)')  + 
+  scale_fill_gradient(low = 'skyblue',
+                      high = '#FF6066') + 
+  theme(legend.position ="none") + 
+  geom_text(aes(Var1, Var2, label = round(value,2))) +
+  # remove x axis labels
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  # remove y axis labels
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) 
+
+
+library(gridExtra)
+library(grid)
+## asemble plot with a and b labels on h
+gridExtra::grid.arrange(int_per_smb, average_asymmetry_heatmap, ncol = 2)
+
+```

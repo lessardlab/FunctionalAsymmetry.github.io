@@ -1,0 +1,133 @@
+---
+title: "Modelling the effect of FTA in H2"
+format: 
+  html:
+    theme: "flatly" # A clean, flat theme suitable for scientific documents
+    toc: true # Enables table of contents
+    toc-depth: 3 # Adjusts depth of table of contents; change as needed
+    number-sections: true # Enables section numbering
+    fig-width: 6 # Sets default figure width to 6 inches
+    fig-height: 4 # Sets default figure height to 4 inches
+    fig-align: "center" # Centers figures
+editor: visual
+execute:
+  eval: false
+  echo: true
+---
+
+# Get the influence of asymmetry in network specialization
+
+## Observed relationship
+
+```{r}
+
+## compute the differences for all combinations 
+
+
+full_fta <-
+  1:nrow(fr_norm_palms) |>
+  map(function(row){
+    expand.grid(
+      fr_norm_palms[row,] |> dplyr::select(!grid) |> as.numeric(),
+      fr_norm_mammals[row,] |> dplyr::select(!grid) |> as.numeric()) |>
+      mutate(lab = expand.grid(1:7, 1:7) |> 
+               mutate(label = paste0('p', Var1, 'm', Var2)) |> 
+               dplyr::pull(label) ) |>
+      mutate(fta = abs(Var1 - Var2)) |>
+      mutate(grid = fr_norm_palms$grid[row])
+    
+    
+    
+  }) |>
+  bind_rows()
+
+
+
+
+my_fta_h2 <- 
+full_fta |>
+  left_join(h2_grid, 'grid')
+
+
+my_fta_h2_sum <-
+my_fta_h2 |>
+  group_by(grid) |>
+  summarise(mean_fta = mean(fta, na.rm = T), 
+            sd_fta = sd(fta, na.rm = T),
+            h2 = mean(h2))
+
+obs_model1 <- lm(h2~mean_fta+sd_fta, data = my_fta_h2_sum)
+
+sjPlot::tab_model(obs_model1)
+
+saveRDS(obs_model1, '00_Data/04_models/obs_model1.RDS')
+```
+
+## Expected relationship
+
+```{r}
+saveRDS(full_fta_expected, file = '00_Data/02_species_interactions/full_fta_expected.RDS')
+```
+
+```{r}
+
+
+## Get the distribution of expected coefficients between simulated fta and h2 
+
+full_fta_expected <- 
+full_fta_expected |>
+  group_by(grid,lab) |>
+  mutate(rep = rep(1:50))
+
+
+dim(full_fta_expected)
+
+
+head(full_fta_expected)
+h2_mod_fta <- 
+  full_fta_expected |>
+  group_by(grid, rep) |>
+  summarise(mean_fta = mean(fta, na.rm = T), 
+            sd_fta = sd(fta, na.rm = T),
+            h2_obs = mean(h2_obs))|>
+  group_map(~{
+    lm(h2_obs~mean_fta+sd_fta, data = .x) })
+
+
+h2_mod_fta_coef <- 
+h2_mod_fta |>
+  map(~coef(.x)) |> 
+  bind_rows() 
+
+h2_mod_fta |> map(~vegan::RsquareAdj(.x)[[1]]) |> unlist()
+
+
+
+```
+
+```{r}
+
+
+vline_positions <- obs_model1 |> coef() |> data.frame()
+vline_positions$variable <- rownames(vline_positions)
+names(vline_positions) <- c('value', 'variable')
+
+custom_labels <- c("(Intercept)" = "Model Intercept",
+                   "mean_fta" = "FTA (mean)", 
+                   "sd_fta" = "FTA (sd)")
+
+
+h2_mod_fta_coef |>
+ reshape2::melt() |> 
+  ggplot() +
+  geom_histogram(aes(value)) + 
+  facet_wrap(~variable, labeller = as_labeller(custom_labels))  +
+  geom_vline(data = vline_positions, aes(xintercept = value),
+             color = "red", linetype = 1, size = 1) +
+  theme_minimal() +
+  ylab('Frequency count') + 
+  xlab('Model estimate')
+
+
+
+```

@@ -1,0 +1,116 @@
+---
+title: "Importing Data"
+format: 
+  html:
+    theme: "flatly" # A clean, flat theme suitable for scientific documents
+    toc: true # Enables table of contents
+    toc-depth: 3 # Adjusts depth of table of contents; change as needed
+    number-sections: true # Enables section numbering
+    fig-width: 6 # Sets default figure width to 6 inches
+    fig-height: 4 # Sets default figure height to 4 inches
+    fig-align: "center" # Centers figures
+editor: visual
+execute:
+  eval: false
+  echo: true
+---
+
+
+# Dependencies
+
+```{r}
+library(tidyverse) # for data manipulation 
+library(sf) # for simple feature manipulation 
+library(vegan) # ecological analyses 
+library(cassandRa) # latent network analyses 
+```
+
+# Species distribution data 
+
+```{r}
+
+# load data directory
+palm_all_files <- list.files("00_Data/00_species_distribution/Palm-distribution-ranges/Shapefiles/", full.names = T)
+# get  shp files
+palm_shp_files <- palm_all_files[str_detect(palm_all_files, ".shp")]
+# filter xml out
+palm_shp_files <- palm_shp_files[!str_detect(palm_shp_files, ".xml")]
+
+# get map of biogeographic dominions on the Neotropics 
+
+neotropics <- st_read('00_Data/03_Landscape/Morrone_Neotropics/Lowenberg_Neto_2014.shp')
+
+grid <- st_make_grid(neotropics, cellsize = c(1, 1), what = "polygons", 
+                     crs = sf::st_crs(st_read(palm_shp_files[1])))
+# Convert the grid to a simple feature collection
+grid <- st_sf(grid)
+
+# get grid level assemblages for palms and mammals
+
+palm_grids <- readRDS("00_Data/00_species_distribution/gridded_palm_data.RDS")
+mammal_grids <- readRDS("00_Data/00_species_distribution/gridded_mammal_data.RDS")
+```
+
+# Species traits data 
+
+```{r}
+# get trait data for the Neotropics 
+
+palm_traits <- read.csv('00_Data/01_species_traits/final_palm_trait.csv')
+mammal_traits <- read.csv('00_Data/01_species_traits/final_mammal_trait.csv')
+```
+
+
+# Species interaction data 
+
+
+```{r}
+# get available interaction data for the Neotropics 
+
+int_data <- readRDS('00_Data/02_species_interactions/final_int_data.RDS')
+palm_trait_data <- palm_trait_data[complete.cases(palm_trait_data),]
+mammal_trait_data <- mammal_trait_data[complete.cases(mammal_trait_data),]
+
+# filter to match species between databasees
+int_data <- int_data %>% 
+  filter(int_data$PALM %in% palm_trait_data$SpecName,
+         int_data$FRUGIVORE %in% mammal_trait_data$Scientific)
+
+# make binary matrix
+
+N <- int_data %>% 
+  xtabs(~PALM + FRUGIVORE, .)
+
+N[N>1] <- 1
+
+```
+
+
+Filtering species trait data for which we have also interaction records
+
+```{r}
+
+palm_trait_data <- palm_trait_data %>% 
+  filter(palm_trait_data$SpecName %in% int_data$PALM )
+
+
+mammal_trait_data <- mammal_trait_data %>% 
+  filter(mammal_trait_data$Scientific %in% int_data$FRUGIVORE )
+
+
+
+```
+
+Observe data imbalance
+
+```{r}
+c(
+  'traits palms' = palm_trait_data$SpecName %>% unique() %>% length(),
+  'traits mammals' = mammal_trait_data$Scientific %>% unique() %>% length(),
+  'interaction palms' = int_data$PALM %>% unique() %>% length(),
+  'interaction mammals' = int_data$FRUGIVORE %>% unique() %>% length()
+) %>% barplot(log = 'y',
+              ylab = 'log (species count)',
+              col = c('green', 'firebrick', 'green', 'firebrick'))
+
+```

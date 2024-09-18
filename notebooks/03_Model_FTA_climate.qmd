@@ -1,0 +1,393 @@
+---
+title: "Modelling the effect of climate in FTA"
+format: 
+  html:
+    theme: "flatly" # A clean, flat theme suitable for scientific documents
+    toc: true # Enables table of contents
+    toc-depth: 3 # Adjusts depth of table of contents; change as needed
+    number-sections: true # Enables section numbering
+    fig-width: 6 # Sets default figure width to 6 inches
+    fig-height: 4 # Sets default figure height to 4 inches
+    fig-align: "center" # Centers figures
+editor: visual
+execute:
+  eval: false
+  echo: true
+---
+
+
+# Plot the relationship between FR of palms and mammals and climatic variables
+
+Preprare climatic variables
+
+```{r}
+library(sf)
+library(raster)
+
+neotropics <- st_read('00_Data/03_Landscape/Morrone_Neotropics/Lowenberg_Neto_2014.shp')
+
+grid <- st_make_grid(neotropics, cellsize = c(1, 1), what = "polygons", 
+                     crs = sf::st_crs(st_read(palm_shp_files[1])))
+# Convert the grid to a simple feature collection
+grid <- st_sf(grid)
+
+# download climatic data
+WCLim <- raster::getData("worldclim", var="bio",res=10)
+
+cropMask <- function(raster,prov){
+  ## crop and mask
+  r2 <- crop(raster, extent(prov))
+  r3 <- mask(r2, prov)
+  return(r3)
+}
+
+# crop data to the neotropics
+WCLim <- cropMask(WCLim, neotropics)
+
+# Separate variables of interest
+
+Temp <- WCLim[[1]]
+Prec <- WCLim[[12]]
+PrecSe <- WCLim[[15]]
+IsoTer<- WCLim[[3]]
+TempSeaso<- WCLim[[14]]
+
+Temp <- aggregate(Temp, 1/0.17)
+Prec <- aggregate(Prec, 1/0.17)
+PrecSe <- aggregate(PrecSe, 1/0.17)
+TempSeaso <- aggregate(TempSeaso, 1/0.17)
+
+
+# extract climate data at per grid
+gridTemp <- raster::extract(Temp, Assemblages)
+gridPrec <- raster::extract(Prec,Assemblages)
+gridTS <- raster::extract(TempSeaso,Assemblages)
+gridPS <- raster::extract(PrecSe,Assemblages)
+
+```
+
+Join climatic variables to biological data
+
+```{r}
+add_clim_data <- function(z_score_table, coordinates_grid){
+  # z_score_table <- fr_palms
+  
+  
+  # z_score_table <- z_scores_across_biogeog
+  grid_coords <- as.data.frame(coordinates_grid[as.numeric(z_score_table$grid),])
+  z_score_table <-  cbind(z_score_table,grid_coords)
+  
+  ## make xy dataframe as simple feature
+  grid_coords <- st_as_sf(grid_coords, coords = c("X", "Y"), crs = st_crs(neotropics))
+  
+  
+  ## add id to the models 
+  
+  clim_var <- 
+    data.frame(
+      'Temp' =  raster::extract(Temp, sf::st_as_sf(grid_coords)),
+      'Prec' =  raster::extract(Prec,sf::st_as_sf(grid_coords)),
+      'TS' =  raster::extract(TempSeaso,sf::st_as_sf(grid_coords)),
+      'PS' =  raster::extract(PrecSe,sf::st_as_sf(grid_coords))
+    )
+  
+  ggsf <- data.frame(z_score_table,clim_var)
+  ggsf <- na.omit(ggsf)
+  
+  ggsf <- ggsf |>
+    reshape2::melt(id.vars = c('grid', 'Temp', 'Prec', 'TS', 'PS'), value.name = c('obs_ab'), variable.name = 'SBM_G') |>
+    reshape2::melt(id.vars = c('grid','SBM_G', 'obs_ab'), value.name = c('clim_val'), variable.name = 'clim_var') |> 
+    filter(!SBM_G %in% c('X', 'Y'))
+  
+  return(ggsf)
+  
+}
+
+
+add_clim_data2 <- function(z_score_table, coordinates_grid){
+  # z_score_table <- fr_palms
+  
+  
+  # z_score_table <- z_scores_across_biogeog
+  grid_coords <- as.data.frame(coordinates_grid[as.numeric(z_score_table$grid),])
+  z_score_table <-  cbind(z_score_table,grid_coords)
+  
+  ## make xy dataframe as simple feature
+  grid_coords <- st_as_sf(grid_coords, coords = c("X", "Y"), crs = st_crs(neotropics))
+  
+  
+  ## add id to the models 
+  
+  clim_var <- 
+    data.frame(
+      'Temp' =  raster::extract(Temp, sf::st_as_sf(grid_coords)),
+      'Prec' =  raster::extract(Prec,sf::st_as_sf(grid_coords)),
+      'TS' =  raster::extract(TempSeaso,sf::st_as_sf(grid_coords)),
+      'PS' =  raster::extract(PrecSe,sf::st_as_sf(grid_coords))
+    )
+  
+  ggsf <- data.frame(z_score_table,clim_var)
+  ggsf <- na.omit(ggsf)
+  
+  
+  return(ggsf)
+  
+}
+```
+
+Plot palms relationship with climate
+
+```{r}
+
+fr_palms_with_climate <- add_clim_data(fr_norm_palms, coordinates_grid)
+
+fr_norm_palm_mean_with_climate <- add_clim_data(fr_norm_palm_mean, coordinates_grid)
+
+fr_palms_with_climate |> 
+  ggplot(aes(scale(clim_val), obs_ab)) +
+  geom_point(alpha = 0.05, col = 'firebrick2', size = 0.3) + 
+  facet_wrap(~clim_var+SBM_G, ncol = 7, nrow = 4, scales='free') +
+  theme_minimal() +
+  labs(title = 'Mammal Functional Richness ~ Climate', 
+       y = 'Proportional abundance', x = 'Climate variable') + 
+  geom_smooth(method = 'lm', col = 'firebrick2') +
+  theme(
+    strip.text = element_text(size = 8, face = "plain"),
+    strip.background = element_blank()
+  ) +
+  theme(strip.text = element_text(margin = margin(0, 0, 0, 0))) + 
+  geom_smooth(aes(scale(clim_val),obs_ab), 
+              method = 'lm',
+              col = 'gray',
+              data = fr_norm_palm_mean_with_climate) 
+```
+
+Plot mammals relationship with climate
+
+```{r}
+
+fr_mammals_with_climate <- add_clim_data(fr_norm_mammals, coordinates_grid)
+
+fr_norm_mammals_mean_with_climate <- add_clim_data(fr_norm_mammals_mean, coordinates_grid)
+
+fr_mammals_with_climate |> 
+  ggplot(aes(scale(clim_val), obs_ab)) +
+  geom_point(alpha = 0.05, col = 'darkgreen', size = 0.3) + 
+  facet_wrap(~clim_var+SBM_G, ncol = 7, nrow = 4, scales='free') +
+  theme_minimal() +
+  labs(title = 'Palm Functional Richness ~ Climate', 
+       y = 'Proportional abundance', x = 'Climate variable') + 
+  geom_smooth(method = 'lm', col = 'darkgreen') +
+  theme(
+    strip.text = element_text(size = 8, face = "plain"),
+    strip.background = element_blank()
+  ) +
+  theme(strip.text = element_text(margin = margin(0, 0, 0, 0))) + 
+  geom_smooth(aes(scale(clim_val),obs_ab), 
+              method = 'lm',
+              col = 'gray',
+              data = fr_norm_mammals_mean_with_climate)
+
+
+```
+
+# Get the influence of climate on asymmetry
+
+```{r}
+full_fta_val_wt_clim <- add_clim_data2(full_fta_val, coordinates_grid)
+
+
+## remove infinite and na values from zscore
+
+full_fta_val_wt_clim <- 
+  full_fta_val_wt_clim |>
+  filter(!is.infinite(zscore), !is.na(zscore))
+
+
+lm_asym_all <- lm(zscore~scale(Temp)*lab + scale(Prec)*lab + scale(TS)*lab + scale(PS)*lab, data = full_fta_val_wt_clim) 
+
+summary(lm_asym_all)
+sjPlot::tab_model(lm_asym_all)
+
+saveRDS(lm_asym_all, '00_Data/04_models/lm_asym_all.RDS')
+
+gtsummary::tbl_regression(lm_asym_all)
+```
+
+Compute aggregates of FTA and its relationship with climate
+
+```{r}
+head(full_fta_val_wt_clim)
+
+agg_fta_clim <- 
+full_fta_val_wt_clim |> 
+  group_by(grid) |>
+  summarize(zscore = mean(zscore, na.rm = T), 
+            Temp = mean(Temp, na.rm = T), 
+            Prec = mean(Prec, na.rm = T), 
+            TS = mean(TS, na.rm = T), 
+            PS = mean(PS, na.rm = T))
+
+agg_mod <- 
+lm(zscore~scale(Temp) + scale(Prec) + scale(TS) + scale(PS), data = agg_fta_clim) 
+
+agg_mod |> summary()
+
+sjPlot::tab_model(agg_mod)
+
+
+
+full_fta_val_wt_clim|>
+  filter(lab == 'p6m5') |>
+  ggplot(aes(scale(PS), fta)) +
+  geom_point(alpha = 0.2, fill = 'gray2', size = 1) +
+  geom_smooth(method = 'lm', col = 'gray2', size = 2) + 
+  theme_minimal() + 
+  labs(title =  'palms[6] x mammals[5]',
+       x = 'Precipitation Seasonality',
+       y = 'FTA') 
+
+
+
+full_fta_val_wt_clim|>
+  filter(lab == 'p1m3') |>
+  ggplot(aes(scale(PS), fta)) +
+  geom_point(alpha = 0.2, fill = 'gray2', size = 1) +
+  geom_smooth(method = 'lm', col = 'gray2', size = 2) + 
+  theme_minimal()  + 
+  labs(title = 'palms[1] x mammals[3]',
+       x = 'Precipitation Seasonality',
+       y = 'FTA') 
+
+
+```
+
+# Define a function to make the plots as function of the climate variable term, make the plot smart to know when lines are significant.
+
+```{r}
+
+make_climate_data_plot <- function(model, var_term){
+
+  # model <- lm_asym_all
+  # var_term <- 'PS'
+  predDat <- sjPlot::plot_model(model, type = 'pred', terms = c(var_term, 'lab'),
+                                return.data = TRUE )
+  
+  ## Add a switch to prepare the labels based on the model terms 
+  
+  plot_labels <- c('Temp' = 'Mean Annual Temperature',
+                   'Prec' = 'Total Annual Precipitation',
+                   'TS' = 'Temperature Seasonality',
+                   'PS' = 'Precipitation Seasonality')
+  
+  # Assuming 'predicted_data' contains the predicted values
+  # Extract necessary data from the plot_model object
+  predicted_data_df <- predDat$data
+  predicted_data_df <- as.data.frame(predicted_data_df)
+  
+  ## subset only those significant varialbes
+  
+  model_p <- broom::tidy(model)
+  
+  p_signif <- model_p$term[model_p$p.value < 0.05] |>
+    data.frame() |>
+    setNames('term') |>
+    filter(str_detect(term, var_term)) |> 
+    filter(str_detect(term, "p[0-9]m[0-9]")) %>% 
+    mutate(term = str_extract(term,'p[0-9]m[0-9]')) |>
+    pull('term')
+  
+  # Add significance column
+  predicted_data_df <- predicted_data_df |>
+    mutate(group = str_extract(group_col, 'p[0-9]')) |>
+    mutate(group2 = str_extract(group_col, 'm[0-9]')) |>
+    mutate(signif = ifelse(group_col %in% p_signif, "p < 0.05", "p > 0.05"))
+  
+  # Check if there are both "Significant" and "Not Significant"
+  signif_levels <- unique(predicted_data_df$signif)
+  
+  if (all(length(signif_levels) == 1 &  signif_levels == 'p > 0.05')) {
+    # Only one type of significance, plot without linetype differentiation
+    ggplot(predicted_data_df, aes(x = scale(x), y = predicted, color = group2)) +
+      geom_line(size = 1, linetype = 2) +
+      labs(
+        title = 'Predicted z-score of FTA',
+        x = plot_labels[var_term],
+        y = 'FTA z-score',
+        color = 'Interaction Terms'
+      ) +
+      theme_minimal() +
+      theme(
+        legend.position = "right",
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8)
+      ) +
+      facet_wrap(~ group, ncol = 7) # Adjust ncol to suit the number of interaction terms
+  } else {
+    # Both types of significance, plot with linetype differentiation
+    ggplot(predicted_data_df, aes(x = scale(x), y = predicted, color = group2)) +
+      geom_line(aes(linetype = signif), size = 1) +
+      labs(
+        title = 'Predicted z-score of FTA',
+        x = plot_labels[var_term],
+        y = 'FTA z-score',
+        color = 'Interaction Terms',
+        linetype = 'p-values'
+      ) +
+      theme_minimal() +
+      theme(
+        legend.position = "right",
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8)
+      ) +
+      facet_wrap(~ group, ncol = 7) # Adjust ncol to suit the number of interaction terms
+  }
+}
+
+```
+
+```{r}
+T_fta_plot <- make_climate_data_plot(lm_asym_all, 'Temp')
+Prec_fta_plot <- make_climate_data_plot(lm_asym_all, 'Prec')
+PS_fta_plot <- make_climate_data_plot(lm_asym_all, 'PS')
+TS_fta_plot <- make_climate_data_plot(lm_asym_all, 'TS')
+
+
+## make a 2x2 panel plot 
+
+gridExtra::grid.arrange(T_fta_plot, Prec_fta_plot, PS_fta_plot, TS_fta_plot, ncol = 2)
+
+
+
+
+
+```
+
+```{r}
+# Create the plot
+library(viridis)  # For a nice color scale
+
+precip_df <- as.data.frame(scale(PrecSe), xy = TRUE)
+
+ps_map <-
+ggplot() +
+  geom_raster(data = precip_df, aes(x = x, y = y, fill = bio15)) +
+  scale_fill_viridis(name = "Precipitation\nSeasonality", option = "D", na.value = "transparent") +
+  geom_sf(data = neotropics, fill = NA, color = "black", size = 0.5) +
+  coord_sf(xlim = c(-120, -30), ylim = c(-56, 33), expand = FALSE) +
+  labs(
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.title = element_text(size = 12),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  )
+
+gridExtra::grid.arrange(PS_fta_plot, ps_map, ncol = 2)
+
+```

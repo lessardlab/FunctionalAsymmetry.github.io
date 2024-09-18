@@ -1,0 +1,876 @@
+---
+title: "Downscalling networks"
+format: 
+  html:
+    theme: "flatly" # A clean, flat theme suitable for scientific documents
+    toc: true # Enables table of contents
+    toc-depth: 3 # Adjusts depth of table of contents; change as needed
+    number-sections: true # Enables section numbering
+    fig-width: 6 # Sets default figure width to 6 inches
+    fig-height: 4 # Sets default figure height to 4 inches
+    fig-align: "center" # Centers figures
+editor: visual
+execute:
+  eval: false
+  echo: true
+---
+
+# Step 1: Network parametrization
+
+First, we fitted latent variable models that captured probabilistic patterns from observed species interactions at the continental scale (i.e. from Muñoz et al., [2019](http://localhost:4649/references.html#ref-munoz2019synthesis)).
+
+```{r, eval = FALSE}
+# we use the interaction matrix sampled at the continental level to fit structural network models that have species level parameters to predict pairwise interactions 
+
+## prepare object to fit latent trait models 
+Ng <- cassandRa::CreateListObject(nRLQ)
+## fit all models 
+latent_network_models <- cassandRa::FitAllModels(Ng)
+
+```
+
+```{r, echo = FALSE}
+latent_network_models <- readRDS('C:/Users/gabri/Documents/PhD/00_Chapter_palms_mammal_interactions/R-analisis/00_Data/04_models/latent_net_mod.RDS')
+
+```
+
+Let's compare the output of the latent network models
+
+```{r, fig.show = 'hold'}
+
+par(mfrow = c(2,2))
+
+latent_network_models$SBM_ProbsMat  %>% 
+  heatmap(main = 'Stochastic Block Model')
+
+
+latent_network_models$B_ProbsMat  %>% 
+  heatmap(main = 'Matching-centrality Model')
+
+
+latent_network_models$C_ProbsMatrix  %>% 
+  heatmap(main = 'Connectance Model')
+
+
+latent_network_models$M_ProbsMatrix %>% 
+  heatmap(main = 'Trait Matching Model')
+
+nRLQ %>% 
+  heatmap(main = 'Observed', col = c('white', 'black'), Rowv = NA, Colv = NA)
+
+
+
+```
+
+Then, we compared the models fitted to the observed data with the Youden's J statistic. This statistic is a measure of the performance of a binary classification test, and it is defined as the sum of sensitivity and specificity minus one. The statistic ranges from -1 to 1, with 1 indicating perfect classification, 0 indicating no better than random classification, and -1 indicating total disagreement between the classification and the true state.
+
+```{r}
+
+# Defining a function to compute Youden's J statistic
+
+#' @title TestYJ 
+#' @description Function to compute Youden's J statistic
+#' @param probNet A matrix with the probabilities of interaction between species
+#' @param obs A binary vector with the observed interactions
+#' @param n The number of iterations to compute the statistic
+#' @return A data frame with the sensitivity, specificity, and Youden's J statistic for each iteration
+
+TestYJ <- function(probNet,obs, n){
+  
+  ## parameters to debug 
+  
+  probNet <- as.matrix(latent_network_models$SBM_ProbsMat)
+  obs <- as.matrix(latent_network_models$obs)
+  n <- 2
+  
+  
+  
+  
+  sq <- seq(range(probNet)[1],
+            range(probNet)[2], 
+            diff(range(probNet))/n)
+  sens <- c()
+  speci <- c()
+  YJ <- c()
+  
+  for (i in 1:n) {
+    prob10 <- ifelse(probNet > sq[i], 1,0)
+    
+    Ttab <- prop.table(table(obs,prob10))
+    
+    sens[i] <- Ttab[4]/c(Ttab[4] + Ttab[2])
+    speci[i] <- Ttab[1]/c(Ttab[1] + Ttab[3])
+    
+    YJ[i] <- sens[i] + speci[i] - 1
+    
+  }
+  
+  ret <- data.frame(sens, speci, YJ)
+  ret
+  return(ret)
+  
+}
+
+```
+
+After defining the function, we apply to the results of the latent network models fitted with `cassandRa`
+
+```{r}
+## Create a list to store the fitted results of latent models 
+
+probNet <- list(latent_network_models$SBM_ProbsMat, 
+                latent_network_models$C_ProbsMatrix, 
+                latent_network_models$M_ProbsMatrix, 
+                latent_network_models$B_ProbsMat)
+
+
+TestYJ(probNet[[1]],latent_network_models$obs, 2)
+## Apply the to TestYJ function to compute the youdens J statistic
+
+YJtestin <- lapply(1:4, function(i) TestYJ(probNet[[i]],latent_network_models$obs, 100))
+
+## Rearrange the resulting dataset and name variables appropiatetly
+
+YJtestin <- YJtestin |>
+  set_names(c('SBM', 'Cent', 'Matc', 'Match_Cent')) |>
+  imap(~{
+    .x |>
+      mutate(id = .y )
+  }) |>
+  bind_rows()
+```
+
+Let's compare model performance visually across a gradient of cut thresholds
+
+```{r}
+library(ggplot2)
+
+YJtestin |>
+  ggplot(aes( 1-speci,sens, color = factor(id))) +
+  geom_point(size = 3, alpha = 0.4) + 
+  geom_line(size = 2, alpha = 0.5) + 
+  theme_bw() + 
+  geom_abline(aes(slope =  1, intercept = 0), size = 1.5) + 
+  xlab('1 - Specificity') + 
+  ylab('Sensitivity') + 
+  theme_classic()
+```
+
+Let's compare model performance for metric aggregates
+
+```{r}
+
+## Compare aggrefate measures across models 
+YJtestin %>%
+  group_by(id) %>% 
+  summarize(sens = median(sens), 
+            speci = median(speci), 
+            yj = median(YJ))
+
+
+YJtestin |>
+  ggplot(aes(id, YJ)) + 
+  geom_boxplot(aes(fill = factor(id)), alpha = 0.3) + 
+  theme_bw() + 
+  ylab("Youden's J") + 
+  xlab("Network structural model")+
+  theme_classic()
+```
+
+Lets now observe the cut off for the best binary model.
+
+```{r}
+yj <- YJtestin %>% 
+  filter(id == 'Match_Cent') %>% 
+  select(YJ) 
+
+
+
+
+
+sq <- seq(range(probNet)[1],
+          range(probNet)[2], 
+          diff(range(probNet))/100)
+
+YJtestin <- 
+  YJtestin |>
+  group_by(id) |> 
+  mutate(sq = decostand(sq[-1], method = 'range') )
+
+
+YJtestin |>
+  ggplot(aes(sq, YJ, color = factor(id))) +
+  geom_hline(aes(yintercept = 0), size = 1.5) + 
+  geom_point() +
+  geom_line(size = 3, alpha= 0.5)  + 
+  ylab("Youden's J") + 
+  xlab("Probability threshold")+
+  theme_classic()
+
+
+
+
+
+
+
+```
+
+We can observe the SBM outperform other models in predicting species interactions. This suggest the assumption of modules in the continental network is a valid one when defining network assembly. Therefore, to capture probabilistic patterns from interactions -observed- at the continental scale, we used the stochastic block model (SBM) as our benchmark latent variable model. SBM is a model that relies on the assumption that ecological networks exhibit a modular pattern, where subsets of species interact more with others within their particular group of highly connected species. Thereby, the output of this model is an incidence matrix reflecting species level associations to a group, and a squared matrix reflecting the interaction probabilities of species within and between groups ([Terry and Lewis 2020](http://localhost:4649/references.html#ref-terry2020finding)). The number of groups and species sorting into latent groups are optimized with a maximum likelihood approach.
+
+Species group associations can reflect trait incompatibilities between species, spatio-temporal segregation of species assemblages, or species-level differences in sampling effort ([Durand-Bessart et al. 2023](http://localhost:4649/references.html#ref-durand2023trait)).
+
+Let's now refit the SBM model to the continental network data
+
+```{r, eval = FALSE}
+
+# Refit SBM
+SBMs <- cassandRa::FitSBM(Ng)
+```
+
+Let's calculate summary statistics of the fitted model
+
+The ratio between the average probability of interactions for a species pair within modules and between modules
+
+```{r}
+
+SBMs$SBM1$Omega_rs %>% diag() %>% mean() / 
+  
+  SBMs$SBM1$Omega_rs[upper.tri(SBMs$SBM1$Omega_rs) ] %>% mean()
+```
+
+Let's extract the fitted matrix of species group associations.
+
+```{r}
+## Fitted group associations for palms 
+PalmNet <- data.frame(Ng$HostNames,
+                      "SBMs.SB_H" = SBMs$SBM1$SB_H)
+
+## Fitted group associations for mammals 
+
+MammNet <- data.frame(Ng$WaspNames,
+                      "SBMs.SB_W" = SBMs$SBM1$SB_W)
+```
+
+Let's join the synthetic data with the observed trait data
+
+```{r}
+### Join observed and synthetic trait data
+
+PalmNet <- data.frame(PalmNet,
+                      palm_traits[match(PalmNet$Ng.HostNames,
+                                        palm_traits$SpecName),])
+MammNet <- data.frame(MammNet,
+                      mammal_traits[match(MammNet$Ng.WaspNames,
+                                          mammal_traits$Scientific),])
+```
+
+Let's visualize the fitted groupings
+
+```{r}
+palm_groupings_p <- PalmNet %>% 
+  ggplot(aes(factor(SBMs.SB_H), AverageFruitLength_cm)) + 
+  geom_boxplot(aes(fill = factor(SBMs.SB_H)), col = 'black', alpha = 0.6) +
+  theme_minimal() + 
+  xlab('') + 
+  ylab('Palm Fruit Length (log)') +
+  theme(legend.position="none")
+
+mamma_groupings_p <- MammNet %>% 
+  ggplot(aes(factor(SBMs.SB_W), BodyMass.Value)) + 
+  geom_boxplot(aes(fill = factor(SBMs.SB_W)),
+               col = 'black', alpha = 0.6)  + 
+  theme_minimal() + 
+  xlab('SBM group') + 
+  ylab('Mammal body mass (log)') +
+  theme(legend.position="none")
+
+
+
+# grid_sbm <-
+
+SBMs$SBM1$Omega_rs %>% 
+  reshape2::melt() %>% 
+  ggplot() + 
+  geom_tile(aes(Var1, Var2, fill = value),  col = 'black', size = 1) + 
+  theme_minimal() + 
+  xlab('SBM group') + 
+  ylab('SBM group')  + 
+  scale_fill_gradient(low = 'white',
+                      high = 'firebrick') + 
+  theme(legend.position ="none")
+geom_text(aes(Var1, Var2, label = round(value,2))) 
+
+
+
+
+panel1 <- gridExtra::grid.arrange(palm_groupings_p,mamma_groupings_p)
+full_panel <- gridExtra::grid.arrange(panel1,grid_sbm, ncol = 2)
+```
+
+# Step 2: Downscale interaction networks with gridded trait and distribution data
+
+Second, we use multinomial logistic regression models to fit the species-level parameters extracted from the latent-variable models to the variation on species functional traits. We employed multinomial logistic regression models that predicted species level SBM group associations from traits and taxonomic data. We justify the choice of multinomial logistic regression models as these can handle the prediction of non-binary outcomes, that is in our case, the labeling of SBM groupings per species.
+
+We fitted separate multinomial models for palms and mammal frugivores using a label backpropagation algorithm and a neural network engine, with 75% of the data allocated for training and the 25% remaining for testing.
+
+We evaluated distinct model recipes, each representing a unique combination of trait and taxonomic predictors and variable transformations. We evaluated model performance with the Receiver Operating Characteristic (ROC) curves for each model and computing the area under the curve (AUC). The model with the highest AUC was selected as the best fit model. This approach allowed us to explore the influence of distinct traits and taxonomic factors reflecting species SBM groupings.  We extracted variable importance scores with combinations of the absolute values of the best fit model weights ([Gevrey, Dimopoulos, and Lek 2003](http://localhost:4649/references.html#ref-gevrey2003review)).
+
+```{r}
+
+library(tidymodels)
+MammNet <- MammNet %>% 
+  mutate(SBMs.SB_W = as.factor(SBMs.SB_W))
+{
+  # Split the data into training and testing sets 
+  
+  data_split <- initial_split(MammNet, prop = 0.80)  # 75% of the data goes to the training set
+  
+  # Extract the training set
+  data_train <- training(data_split)
+  
+  # Extract the testing set
+  data_test <- testing(data_split)
+  
+  ## Define  a list of recipes 
+  
+  rec_list <- list(
+    "recipe1" = recipe(SBMs.SB_W ~  BodyMass.Value + Diet.Fruit, data = MammNet) %>%
+      step_log(BodyMass.Value, base = 10),
+    "recipe2" = recipe(SBMs.SB_W ~  BodyMass.Value + Diet.Fruit, data = MammNet),
+    "recipe3" = recipe(SBMs.SB_W ~ BodyMass.Value + Diet.Fruit, data = MammNet) %>%
+      step_log(BodyMass.Value, base = 10),
+    "recipe4" = recipe(SBMs.SB_W ~ BodyMass.Value + Diet.Fruit, data = MammNet)
+  )
+  
+  
+  # Specify model using parsnip
+  model_spec <- multinom_reg() %>%
+    set_engine("nnet") %>%
+    set_mode("classification")
+  
+  
+  # Create a list of workflows using purrr::map
+  workflows <- map(rec_list, ~workflow() %>%
+                     add_recipe(.x) %>%
+                     add_model(model_spec) %>%
+                     fit(data_train))
+  }
+
+# Calculate the AUC for each model
+aucs_mam <-  map_df(workflows, ~.x %>%
+                      augment(data_test) %>%
+                      roc_auc(truth = SBMs.SB_W, .pred_1:.pred_7))
+
+
+
+# Augment the workflows and calculate the ROC data
+roc_data <- map(workflows, ~.x %>%
+                  augment(data_test) %>%
+                  roc_curve(truth = SBMs.SB_W, .pred_1:.pred_7))
+
+# Combine the ROC data into a single data frame
+roc_data_combined <- bind_rows(roc_data, .id = "Model")
+
+# Plot the ROC curves for all models together
+roc_mammals <- roc_data_combined %>%
+  ggplot(aes(x = 1 - specificity, 
+             y = sensitivity, color = Model)) +
+  geom_smooth(aes(fill = Model), alpha = 0.2, size = 2) + 
+  geom_abline(aes(intercept = 0, slope =1), size = 3 ) + 
+  labs(x = "1 - Specificity",
+       y = "Sensitivity", 
+       title = "ROC Curves for All Models") + 
+  theme_minimal()
+roc_mammals
+
+```
+
+```{r}
+
+
+### Repeat for palms 
+names(PalmNet)
+
+PalmNet <- PalmNet %>% 
+  mutate(SBMs.SB_H = as.factor(SBMs.SB_H))
+
+# Split the data into training and testing sets 
+{
+  data_split <- initial_split(PalmNet, prop = 0.80)  
+  # 75% of the data goes to the training set
+  
+  # Extract the training set
+  data_train <- training(data_split)
+  
+  # Extract the testing set
+  data_test <- testing(data_split)
+  
+  ## Define  a list of recipes 
+  
+  rec_list <- list(
+    "recipe1" = recipe(SBMs.SB_H ~  MaxStemHeight_m + AverageFruitLength_cm, data = data_train) %>%
+      step_log(AverageFruitLength_cm, base = 10, offset = 1),
+    "recipe2" = recipe(SBMs.SB_H ~  MaxStemHeight_m + AverageFruitLength_cm, data = data_train),
+    "recipe3" = recipe(SBMs.SB_H ~  MaxStemHeight_m, data = data_train) %>%
+      step_log(MaxStemHeight_m, base = 10, offset = 1),
+    "recipe4" = recipe(SBMs.SB_H ~  AverageFruitLength_cm, data = data_train) %>% 
+      step_log(AverageFruitLength_cm, base = 10, offset = 1),
+    "recipe5" = recipe(SBMs.SB_H ~ AverageFruitLength_cm, data = data_train)
+  )
+  
+  
+  # Specify model using parsnip
+  model_spec <- multinom_reg() %>%
+    set_engine("nnet") %>%
+    set_mode("classification")
+  
+  
+  # Create a list of workflows using purrr::map
+  workflows <- map(rec_list, ~workflow() %>%
+                     add_recipe(.x) %>%
+                     add_model(model_spec) %>%
+                     fit(data_train))
+  }
+```
+
+Let's now evaluate model performance
+
+```{r}
+# Augment the workflows and calculate the ROC data
+roc_data <- map(workflows, ~.x %>%
+                  augment(data_test) %>%
+                  roc_curve(truth = SBMs.SB_H,.pred_1:.pred_7 ))
+
+
+
+# Combine the ROC data into a single data frame
+roc_data_combined <- bind_rows(roc_data, .id = "Model")
+
+# Plot the ROC curves for all models together
+roc_palm_plot <- roc_data_combined %>%
+  ggplot(aes(x = 1 - specificity, 
+             y = sensitivity, color = Model)) +
+  geom_point() +
+  geom_smooth() + 
+  geom_abline(aes(intercept = 0, slope =1 )) + 
+  labs(x = "1 - Specificity", y = "Sensitivity", title = "ROC Curves for All Models")
+
+
+
+# Calculate the AUC for each model
+aucs <-  map_df(workflows, ~.x %>%
+                  augment(data_test) %>%
+                  roc_auc(truth = SBMs.SB_H, .pred_1:.pred_7))
+
+
+
+barplot(aucs$.estimate, names.arg = aucs$.model, col = 'firebrick', las = 2, ylab = 'AUC', xlab = 'Model')
+```
+
+We search for the most important variables to predict model outcomes of the best fit model
+
+```{r}
+## Mammals 
+## refit using nnet 
+library(nnet)
+refit_mammal <- nnet::multinom(SBMs.SB_W ~ log(BodyMass.Value) + Diet.Fruit, data = MammNet)
+colnames(MammNet)
+
+# Assuming your data frame is named df
+# Specify the outcome variable
+outcome_var <- "SBMs.SB_W"
+
+# Specify the columns to exclude
+exclude_vars <- c("Ng.WaspNames","Scientific", "MSWFamilyLatin", outcome_var)
+
+# Create the formula dynamically
+predictor_vars <- setdiff(names(MammNet), exclude_vars)
+formula <- as.formula(paste(outcome_var, "~", paste(predictor_vars, collapse = " + ")))
+
+# Fit the multinomial logistic regression model
+refit_mammal <- multinom(formula, data = MammNet)
+```
+
+Visualize results
+
+```{r}
+par(mar = c(3,10,2,2))
+
+var_im_mammal <- 
+caret::varImp(refit_mammal) %>%
+  arrange(desc(Overall)) %>% 
+  rownames_to_column('trait') %>%
+  ggplot() + 
+ # variable importance ranked 
+  geom_bar(aes(reorder(trait, Overall), Overall), stat = 'identity', fill = 'firebrick') + 
+  coord_flip() + 
+  theme_minimal() + 
+  ylab('Variable importance') + 
+  xlab('Interaction Trait') + 
+  theme(axis.text.y = element_text(size = 8)) + 
+  theme(axis.text.x = element_text(size = 8)) + 
+  theme(axis.title.x = element_text(size = 10)) + 
+  theme(axis.title.y = element_text(size = 10)) + 
+  theme(legend.position = 'none')
+
+
+var_im_palm <- 
+caret::varImp(refit_palm) %>%
+  arrange(desc(Overall)) %>% 
+  rownames_to_column('trait') %>%
+  ggplot() + 
+ # variable importance ranked 
+  geom_bar(aes(reorder(trait, Overall), Overall), stat = 'identity', fill = 'firebrick') + 
+  coord_flip() + 
+  theme_minimal() + 
+  xlab('Interaction Trait') + 
+  ylab('Variable importance') + 
+  theme(axis.text.y = element_text(size = 8)) + 
+  theme(axis.text.x = element_text(size = 8)) + 
+  theme(axis.title.x = element_text(size = 10)) + 
+  theme(axis.title.y = element_text(size = 10)) + 
+  theme(legend.position = 'none')
+
+
+
+library(patchwork) 
+
+## plot both 
+
+var_imp_both <- var_im_palm + var_im_mammal
+
+## save plot as tiff
+
+var_imp_both |> 
+  ggsave("02_Outputs/partial_figs/var_imp_plot.tiff", width = 10, height = 10, units = "in")
+
+```
+
+```{r}
+Pred_trait_data <- data.frame(MammNet, "pred" = predict(refit_mammal))
+
+diet_trait_plot <- 
+reshape2::melt(Pred_trait_data) %>% 
+  group_by(pred,variable) |>
+  summarize(value = mean(value)) |>
+filter(grepl("^Diet", variable)) |> 
+  ggplot(aes(pred, variable, fill = value)) + 
+  geom_tile() + 
+  theme_minimal() +
+  ylab('Mammal diet traits') + 
+  xlab('Interaction blocks') + 
+  labs(fill = 'Percentage') +  # Set your custom legend title here
+  theme(
+    legend.position = 'right'  # Display the legend on the righ
+  ) +scale_fill_gradient(low = "white", high = "firebrick", limits = c(0,100)) 
+
+
+
+activity_trait_plot <- 
+reshape2::melt(Pred_trait_data) %>% 
+  group_by(pred,variable) |>
+filter(!grepl("^Diet|BodyMass", variable))|> 
+    summarize(value = mean(value)) |>
+  ggplot(aes(pred, variable, fill = value)) + 
+  geom_tile() + 
+  theme_minimal() +
+  ylab('Mammal activity traits') + 
+  xlab('Interaction blocks') + 
+  labs(fill = 'Percentage') +  # Set your custom legend title here
+  theme(
+    legend.position = 'right'  # Display the legend on the righ
+  ) +scale_fill_gradient(low = "white", high = "firebrick", limits = c(0,1)) 
+
+
+
+body_mass_plot <- 
+reshape2::melt(Pred_trait_data) %>% 
+  group_by(pred,variable) |>
+filter(grepl("BodyMass", variable))|>
+  ggplot(aes(pred, value)) + 
+  geom_boxplot( )   + 
+  theme_minimal() +
+  ylab('Mammal body mass (log)') + 
+  xlab('Interaction blocks') + 
+  labs(fill = 'Percentage') +  # Set your custom legend title here
+  theme(
+    legend.position = 'right'  # Display the legend on the righ
+  ) +scale_fill_gradient(low = "white", high = "firebrick", limits = c(0,1)) 
+
+
+library(patchwork)
+
+trait_plot <- diet_trait_plot + activity_trait_plot + body_mass_plot + plot_layout(ncol = 3)
+
+## write plot as tiff
+
+trait_plot |> 
+  ggsave("trait_plot.tiff", width = 10, height = 10, units = "in")
+```
+
+```{r}
+colnames(var_imp_mam) <- str_remove(colnames(var_imp_mam), 'MSWFamilyLatin')
+colnames(var_imp_mam) <- str_remove(colnames(var_imp_mam), '.Value')
+
+sjPlot::tab_model(refit_mammal)
+
+var_imp_plot_mam <- barplot(var_imp_mam,
+                            horiz = T, 
+                            las = 1)
+```
+
+```{r}
+## palms
+
+
+## refit using nnet 
+
+refit_palm <- nnet::multinom(SBMs.SB_H ~  MaxStemHeight_m + AverageFruitLength_cm + Acaulescent + Erect, data = PalmNet)
+
+
+
+Pred_trait_data_palm <- data.frame(PalmNet, "pred" = predict(refit_palm))
+
+fruit_lenght_plot <- 
+reshape2::melt(Pred_trait_data_palm) %>% 
+  group_by(pred,variable) |>
+filter(grepl("^Avera", variable)) |> 
+  ggplot(aes(pred, value) )+ 
+  geom_boxplot() + 
+  theme_minimal() +
+  ylab('Average Fruit Length (log)') + 
+  xlab('Interaction blocks') + 
+  labs(fill = 'Percentage') +  # Set your custom legend title here
+  theme(
+    legend.position = 'right'  # Display the legend on the righ
+  ) +scale_fill_gradient(low = "white", high = "firebrick", limits = c(0,100))
+
+
+stem_height_plot <- 
+reshape2::melt(Pred_trait_data_palm) %>% 
+  group_by(pred,variable) |>
+filter(grepl("^MaxS", variable)) |> 
+  ggplot(aes(pred, value) )+ 
+  geom_boxplot() + 
+  theme_minimal() +
+  ylab('Maximum stem height (log)') + 
+  xlab('Interaction blocks') + 
+  labs(fill = 'Percentage') +  # Set your custom legend title here
+  theme(
+    legend.position = 'right'  # Display the legend on the righ
+  ) +scale_fill_gradient(low = "white", high = "firebrick", limits = c(0,100)) 
+
+growth_form_plot <- 
+reshape2::melt(Pred_trait_data_palm) %>% 
+  group_by(pred,variable) |>
+  summarize(value = mean(value)) %>% 
+filter(!grepl("^MaxS|Average", variable)) |> 
+  ggplot(aes(pred, variable, fill = value) )+ 
+  geom_tile() + 
+  theme_minimal() +
+  ylab('Growth form') + 
+  xlab('Interaction blocks') + 
+  labs(fill = 'Percentage') +  # Set your custom legend title here
+  theme(
+    legend.position = 'right'  # Display the legend on the righ
+  ) +scale_fill_gradient(low = "white", high = "firebrick", limits = c(0,1))
+
+
+## Plot all together
+
+trait_plot_palm <- fruit_lenght_plot + stem_height_plot + growth_form_plot + plot_layout(ncol = 3)
+
+## save as png
+
+trait_plot_palm |> 
+  ggsave("/Users/gabri/Documents/PhD/00_Chapter_palms_mammal_interactions/R-analisis/02_Outputs/partial_figs/trait_plot_palm.tiff", width = 10, height = 10, units = "in")
+
+coef(refit_palm) |> exp() 
+coef(refit_mammal) |> exp() |> round(2)
+sjPlot::tab_model(refit_palm)
+```
+
+Visualize results
+
+```{r}
+par(mar = c(3,10,2,2))
+
+var_im_palm <- t((caret::varImp(refit_palm)))
+colnames(var_im_palm) <- str_remove(colnames(var_im_palm), 'PalmTribe')
+
+var_imp_plot_palm <- barplot(var_im_palm, horiz = T, las = 1)
+
+
+var_m <- var_imp_mam %>% t() %>% data.frame() %>%
+  rownames_to_column('id') %>% 
+  arrange((Overall)) %>% 
+  mutate(id = factor(id, levels = id)) %>% 
+  ggplot(aes(Overall, id)) + 
+  geom_col() + 
+  theme_minimal() + 
+  xlab('Importance') + 
+  ylab('Variable')
+
+
+var_p <- var_im_palm %>% t() %>% data.frame() %>%
+  rownames_to_column('id') %>% 
+  arrange((Overall)) %>% 
+  mutate(id = factor(id, levels = id)) %>% 
+  ggplot(aes(Overall, id)) + 
+  geom_col() + 
+  theme_minimal() + 
+  xlab('Importance') + 
+  ylab('Variable')
+
+
+gridExtra::grid.arrange(var_p, var_m, ncol = 2)
+```
+
+Finally, we use these predictions to infer the network of interactions for the set of all co-occurring palm and mammal frugivore species at each gridcell for all gridcells in the Neotropics.
+
+```{r}
+
+PalmPreds <- data.frame("spNamePalm" = palm_traits$SpecName,
+                        "group" = predict(refit_palm, palm_traits, allow.new.levels = T))
+
+
+# predict mammal
+
+mammPreds <- data.frame("spNameMam" = MammNet$Scientific,
+                        "group" = predict(refit_mammal,MammNet))
+
+
+# get the assemblages 
+
+palm_grids <- readRDS("00_Data/00_species_distribution/gridded_palm_data.RDS")
+mammal_grids <- readRDS("00_Data/00_species_distribution/gridded_mammal_data.RDS")
+
+
+palm_grids <- palm_grids %>% set_names(str_replace(str_remove(basename(palm_shp_files), '.shp'),'_', " "))
+palm_grids <- keep(palm_grids,~ !is.null(.x$result))
+
+```
+
+Lets obtain the centroid of the grid features to get point-based coordinate data
+
+```{r}
+sf::sf_use_s2(FALSE)
+
+centroids_mammals <- mammal_grids %>% imap(~st_centroid(.x) %>% 
+                                             st_coordinates() %>%
+                                             data.frame() %>% 
+                                             mutate(id = .y, 
+                                                    area = st_area(.x))) %>% 
+  bind_rows()
+
+
+get_palm_centroids <-  function(palm_grids){
+  palm_grids %>% imap(~st_centroid(.x$result) %>% 
+                        st_coordinates() %>%
+                        data.frame() %>% 
+                        mutate(id = .y, 
+                               area = st_area(.x$result), 
+                               X1 = NULL,
+                               x2 = NULL)) %>% 
+    bind_rows() 
+}
+
+## Make a safe version of the ftion to avoid errors
+safe_get_palm_centroids <- safely(get_palm_centroids)
+
+centroids_palms <- safe_get_palm_centroids(palm_grids)
+
+centroids_palms$result %>% 
+  head()
+```
+
+Grouping by matching coordinates, lets make assemblages for species coocurring in the same grid cell
+
+```{r}
+#make assemblages for all species 
+
+all_assemblages <- centroids_mammals %>% 
+  rbind(centroids_palms$result %>% dplyr::select(!X2))
+
+
+# round to 2 decimals 
+all_assemblages <- all_assemblages %>% 
+  mutate(taxa = case_when(id %in% palm_traits$SpecName ~ 'palm', 
+                          id %in% mammal_traits$Scientific ~ 'mammals',
+                          TRUE~NA_character_), 
+         grid_id = paste0(X,'_', Y)) 
+
+head(all_assemblages)
+```
+
+```{r}
+# transform centroids to features
+all_assemblages <- st_as_sf(all_assemblages, coords = c('X', 'Y'), crs = st_crs(grid))
+# set right crs
+all_assemblages <- st_set_crs(all_assemblages,value = st_crs(grid) )
+# intersect back with grid
+int <- st_intersects(all_assemblages$geometry, grid)
+# add grid id
+all_assemblages$grid <- unlist(int)
+
+head(all_assemblages)
+```
+
+```{r}
+all_preds_sbm <- rbind(PalmPreds %>% setNames(c('id', 'SBM_G')), mammPreds %>% setNames(c('id', 'SBM_G')))
+
+mammPreds$group  |> unique()
+
+names(PalmPreds)
+# join trait data
+all_assemblages <- all_assemblages %>% 
+  left_join(all_preds_sbm, c('id'))
+```
+
+```{r}
+# recover metaweb 
+
+# count species numbers
+table_taxa_grid <- all_assemblages %>% 
+  split(.$grid) %>% 
+  imap(~{
+    (table(.$taxa)) %>% data.frame() %>% mutate(id = .y)
+  })
+
+
+table_taxa_grid <- table_taxa_grid %>%
+  bind_rows()
+```
+
+```{r}
+richtab <- xtabs(Freq~id+Var1, table_taxa_grid) 
+richtab <- richtab[(richtab[,1]>5 & richtab[,2] > 5),] %>% rownames()
+
+all_assemblages_prunned <- all_assemblages %>% 
+  # filter those grids with at least 5 species
+  filter(grid %in% richtab)
+
+saveRDS(all_assemblages_prunned, '00_Data/02_species_interactions/Metaweb.RDS')
+
+colnames(all_assemblages_prunned)
+```
+
+```{r}
+
+all_assemblages_prunned <- readRDS( '00_Data/02_species_interactions/Metaweb.RDS')
+
+
+idtst <- 
+all_assemblages_prunned |>
+  filter(SBM_G == '5', taxa == 'palm') |>
+  pull(id)
+
+palm_traits |>
+  filter(SpecName %in% idtst)|>
+  pull(AverageFruitLength_cm) |> mean()
+
+```
+
+We consider species interaction probabilities as the product of trait matching and species co-occurrence.We used the inferences from the SBM model to represent the influence of trait matching, whereas to represent co-occurrence we used the reciprocal distance between the centroids of species pair ranges within the grid, divided by the sum of its areas. This means that within every given grid species which range centroids are closer and the larger the sum of its areas within the grid-cell, the higher their chances for them to co-occur and thereby interact.
+
+This approach allowed us to recreate synthetic probabilistic plant-mammal frugivore networks for each grid-cell across the Neotropics, while accounting for the heterogeneity of species ranges within each grid. We applied an exclusion criteria to the list of grids before applying this network generating algorithm, and selected only those grids with at least 5 palm and 5 mammal species.

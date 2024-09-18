@@ -69,6 +69,8 @@ install.packages('gtsummary')
 install.packages('broom')
 install.packages('broom.helpers')
 install.packages('cardx')
+install.packages('car')
+install.packages('parameters')
 library(gtsummary)
 ```
 

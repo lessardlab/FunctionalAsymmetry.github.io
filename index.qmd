@@ -61,6 +61,14 @@ citation:
 number-sections: true
 ---
 
+```{r}
+#| echo: false
+#| include: false
+#| warning: false 
+install.packages('gtsummary')
+```
+
+
 # Introduction
 
 Ecologists often examine patterns of functional trait diversity to

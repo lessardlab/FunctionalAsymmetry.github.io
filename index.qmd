@@ -749,7 +749,7 @@ gtsummary::tbl_regression(mymod,
                                        'scale(Prec)' = 'Total Annual Precipitation','scale(TS)' = 'Temperature Seasonality', 'scale(PS)' = 'Precipitation Seasonality')) |>
   bold_p(t = 0.05)|>
   bold_labels() |>
-  italicize_levels() |> 
+  gtsummary::italicize_levels() |> 
   gtsummary::add_significance_stars()
 
 ```
@@ -767,7 +767,7 @@ gtsummary::tbl_regression(mymod, label = list('mean_fta' = "FTA (mean)",
                                               'sd_fta' = 'FTA (sd)')) |>
   bold_p(t = 0.05)|>
   bold_labels() |>
-  italicize_levels() |>
+  gtsummary::italicize_levels() |>
   add_significance_stars() |>
   add_global_p() 
 
